@@ -1,0 +1,4 @@
+for MiDaS: python run_depth.py --input_source 0
+for ZoeDepth: python ZOEDEPTH-TEST\src\process_video.py --input_path media\input_video_2.mp4 --output_path media\output_depth.mp4
+
+for mettric: G:\Github\ALVINN-A.3\media

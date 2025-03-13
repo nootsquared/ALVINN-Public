@@ -99,8 +99,9 @@ def post_process_probability2(prediction, original_size):
 
 # ...existing code...
 
-def predict_webcam(model_type, finetune_dataset, probability_output, batch_size, gpu=True):
+def predict_webcam(model_type, finetune_dataset, probability_output, batch_size, gpu=True, initial_threshold=0.5):
     start_total_time = time.time()  # Start the timer
+    threshold = initial_threshold  # Initialize threshold value
 
     model = fastsal.fastsal(pretrain_mode=False, model_type=model_type)
     state_dict, _ = load_weight('weights/{}_{}.pth'.format(finetune_dataset, model_type), remove_decoder=False)
@@ -133,32 +134,69 @@ def predict_webcam(model_type, finetune_dataset, probability_output, batch_size,
             y = y.numpy()
             for j, prediction in enumerate(y[:, 0, :, :]):
                 original_size = original_size_list[j].numpy()
+                
                 if not probability_output:
-                    img_data = post_process_png(prediction, original_size)
+                    saliency_map = post_process_png(prediction, original_size)
                 else:
-                    img_data = post_process_probability2(prediction, original_size)
-                img_data = cv2.resize(img_data, (width, height))
-                # Using min-max normalization with cv2 constants
-                img_data = cv2.normalize(img_data, None, 0, 255, cv2.NORM_MINMAX)
-                img_data = img_data.astype(np.uint8)
-                img_data = cv2.applyColorMap(img_data, cv2.COLORMAP_JET)
-
-                # Overlay the saliency map on the original frame
-                overlay_frame = cv2.addWeighted(frame, 0.75, img_data, 0.25, 0)
-
+                    saliency_map = post_process_probability2(prediction, original_size)
+                
+                # Resize saliency map to match frame dimensions
+                saliency_map = cv2.resize(saliency_map, (width, height))
+                
+                # Normalize to 0-1 range
+                saliency_map = cv2.normalize(saliency_map, None, 0, 1, cv2.NORM_MINMAX)
+                
+                # Create a mask based on the threshold
+                mask = (saliency_map > threshold).astype(np.uint8)
+                
+                # Apply colormap to saliency for visualization
+                colored_saliency = cv2.applyColorMap(
+                    (saliency_map * 255).astype(np.uint8), 
+                    cv2.COLORMAP_JET
+                )
+                
+                # Create overlay with saliency
+                overlay_frame = cv2.addWeighted(frame, 0.75, colored_saliency, 0.25, 0)
+                
+                # Create binary mask first
+                binary_mask = np.zeros_like(overlay_frame)
+                # Only copy pixels from overlay_frame where mask is 1 (above threshold)
+                binary_mask[mask > 0] = overlay_frame[mask > 0]
+                
+                # Find contours on the binary mask
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                # Draw red contours around the detected regions
+                masked_output = binary_mask.copy()
+                cv2.drawContours(masked_output, contours, -1, (0, 0, 255), 2)  # Red color (BGR format)
+                
                 # Calculate and display FPS
                 end_time = time.time()
                 fps = 1 / (end_time - start_time)
-                cv2.putText(overlay_frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                
+                # Add text with FPS and threshold information
+                cv2.putText(masked_output, f"FPS: {fps:.2f}", (10, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(masked_output, f"Threshold: {threshold:.2f}", (10, 70), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(masked_output, "Press +/- to adjust threshold", (10, 110), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
                 # Display the frame
-                cv2.imshow('Webcam Live Stream', overlay_frame)
-
-                # Break the loop if 'q' is pressed
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                cv2.imshow('Masked Saliency', masked_output)
+                
+                # Handle keyboard input
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     cap.release()
                     cv2.destroyAllWindows()
                     return
+                elif key == ord('+') or key == ord('='):  # Increase threshold
+                    threshold = min(1.0, threshold + 0.05)
+                    print(f"Threshold increased to: {threshold:.2f}")
+                elif key == ord('-') or key == ord('_'):  # Decrease threshold
+                    threshold = max(0.0, threshold - 0.05)
+                    print(f"Threshold decreased to: {threshold:.2f}")
 
     cap.release()
     cv2.destroyAllWindows()
@@ -258,6 +296,9 @@ if __name__ == '__main__':
                         help='use probability_output or not', default=False, type=bool)
     parser.add_argument('-gpu', action='store', dest='gpu',
                         help='use gpu or not', default=True, type=bool)
+    parser.add_argument('-threshold', action='store', dest='threshold',
+                        help='initial saliency threshold (0.0-1.0)', default=0.3, type=float)
+    
     args = parser.parse_args()
 
     # Ensure the script is running from the correct directory
@@ -266,12 +307,13 @@ if __name__ == '__main__':
         os.chdir(script_dir)
         print(f"Changed working directory to {script_dir}")
 
-    # Always run webcam by default (ignore other arguments)
-    print("Starting webcam prediction (press 'q' to exit)...")
+    # Run webcam with threshold
+    print("Starting webcam prediction with masking (press 'q' to exit, +/- to adjust threshold)...")
     predict_webcam(
         model_type=args.model_type,
         finetune_dataset=args.finetune_dataset,
         probability_output=args.probability_output,
         batch_size=args.batch_size,
-        gpu=args.gpu
+        gpu=args.gpu,
+        initial_threshold=args.threshold
     )

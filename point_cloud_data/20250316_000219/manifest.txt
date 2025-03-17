@@ -1,0 +1,3 @@
+Recording date: 20250316_000219
+Frames: 100
+Saliency threshold: 0.3

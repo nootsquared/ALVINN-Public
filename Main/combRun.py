@@ -15,12 +15,18 @@ from Saliency_Predictions.fastSalGCComb import process_frame_saliency
 from Metric_Depth_Estimation.metric_depth.alvinn_depth.dpt import ALVINNDepth
 
 # Constants for radar view
-RADAR_SIZE = 600  # Size of the radar window
-RADAR_CENTER = (RADAR_SIZE // 2, RADAR_SIZE - 50)  # Position of the camera in radar view
+RADAR_SIZE_W = 800  # Width of the radar window
+RADAR_SIZE_H = 600  # Height of the radar window
+RADAR_CENTER = (RADAR_SIZE_W // 2, RADAR_SIZE_H // 2)  # Center of the radar window
 MAX_DEPTH = 400  # Maximum depth to display in inches (about 10 meters)
 FOV = 78  # Field of view in degrees
 HISTORY_LENGTH = 5  # Number of frames to average for depth smoothing
 DANGER_ZONE = 50  # Danger zone in inches
+
+# FOV angle constants - 0 degrees is right, 90 is up
+FOV_CENTER_ANGLE = 270  # Base angle (270 = straight down, so slice opens toward north)
+FOV_START_ANGLE = FOV_CENTER_ANGLE - (FOV/2)
+FOV_END_ANGLE = FOV_CENTER_ANGLE + (FOV/2)
 
 # Dictionary to store depth history for each point
 depth_history = defaultdict(lambda: [])
@@ -38,53 +44,91 @@ def smooth_depth(point_key, new_depth):
 
 def create_radar_frame():
     # Create a dark gray background
-    radar = np.full((RADAR_SIZE, RADAR_SIZE, 3), (40, 40, 40), dtype=np.uint8)
+    radar = np.full((RADAR_SIZE_H, RADAR_SIZE_W, 3), (40, 40, 40), dtype=np.uint8)
+    
+    # Calculate radar radius
+    radar_radius = min(RADAR_SIZE_W, RADAR_SIZE_H) // 2 - 100
+    
+    # Label cardinal directions - positioned closer to the circle
+    cv2.putText(radar, "N", (RADAR_CENTER[0] - 5, RADAR_CENTER[1] - radar_radius - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+    cv2.putText(radar, "S", (RADAR_CENTER[0] - 5, RADAR_CENTER[1] + radar_radius + 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (150, 150, 150), 1)
+    cv2.putText(radar, "E", (RADAR_CENTER[0] + radar_radius + 10, RADAR_CENTER[1] + 5), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (150, 150, 150), 1)
+    cv2.putText(radar, "W", (RADAR_CENTER[0] - radar_radius - 20, RADAR_CENTER[1] + 5), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (150, 150, 150), 1)
+    
+    # Draw the full 360-degree radar circle
+    cv2.circle(radar, RADAR_CENTER, radar_radius, (100, 100, 100), 1)
     
     # Draw radar grid lines with gradient
-    for r in range(100, RADAR_SIZE, 100):
+    for r in range(100, radar_radius, 100):
         # Calculate gradient color (darker for further lines)
         intensity = max(50, 150 - (r // 2))
         cv2.circle(radar, RADAR_CENTER, r, (intensity, intensity, intensity), 1)
     
-    # Draw FOV lines with gradient
-    angle = FOV / 2
+    # Draw the FOV slice (highlighted area)
+    cv2.ellipse(radar, RADAR_CENTER, (radar_radius, radar_radius),
+                0, FOV_START_ANGLE, FOV_END_ANGLE, (80, 80, 80), -1)  # Fill the FOV slice
+    
+    # Draw FOV lines
     for i in range(1, 4):  # Draw multiple lines with gradient
-        end_x1 = int(RADAR_CENTER[0] + (RADAR_SIZE * i/4) * math.sin(math.radians(angle)))
-        end_y1 = int(RADAR_CENTER[1] - (RADAR_SIZE * i/4) * math.cos(math.radians(angle)))
-        end_x2 = int(RADAR_CENTER[0] - (RADAR_SIZE * i/4) * math.sin(math.radians(angle)))
-        end_y2 = int(RADAR_CENTER[1] - (RADAR_SIZE * i/4) * math.cos(math.radians(angle)))
+        radius = radar_radius * i/4
+        end_x1 = int(RADAR_CENTER[0] + radius * math.cos(math.radians(FOV_START_ANGLE)))
+        end_y1 = int(RADAR_CENTER[1] + radius * math.sin(math.radians(FOV_START_ANGLE)))
+        end_x2 = int(RADAR_CENTER[0] + radius * math.cos(math.radians(FOV_END_ANGLE)))
+        end_y2 = int(RADAR_CENTER[1] + radius * math.sin(math.radians(FOV_END_ANGLE)))
         
         intensity = 100 + (i * 20)
         cv2.line(radar, RADAR_CENTER, (end_x1, end_y1), (intensity, intensity, intensity), 1)
         cv2.line(radar, RADAR_CENTER, (end_x2, end_y2), (intensity, intensity, intensity), 1)
     
-    # Draw depth markers in inches
-    for d in range(12, int(MAX_DEPTH) + 1, 12):  # Every foot
-        y = RADAR_CENTER[1] - int((d / MAX_DEPTH) * (RADAR_SIZE - 100))
-        cv2.putText(radar, f"{d}\"", (10, y), 
-                    cv2.FONT_HERSHEY_DUPLEX, 0.5, (150, 150, 150), 1)
+    # Draw depth markers in inches (with larger intervals)
+    for d in range(48, int(MAX_DEPTH) + 1, 48):  # Every 4 feet
+        radius = int((d / MAX_DEPTH) * radar_radius)
+        # Only draw markers on the right side of the FOV
+        angle = FOV_END_ANGLE  # Right side of the rotated FOV
+        x = int(RADAR_CENTER[0] + radius * math.cos(math.radians(angle)))
+        y = int(RADAR_CENTER[1] + radius * math.sin(math.radians(angle)))
+        # Add text with offset (adjust based on the quadrant)
+        if x > RADAR_CENTER[0]:  # Right half
+            text_x = x + 5
+        else:  # Left half
+            text_x = x - 25
+        if y > RADAR_CENTER[1]:  # Bottom half
+            text_y = y + 5
+        else:  # Top half
+            text_y = y - 5
+        cv2.putText(radar, f"{d}\"", (text_x, text_y), 
+                   cv2.FONT_HERSHEY_DUPLEX, 0.5, (150, 150, 150), 1)
     
     # Create a copy for the danger zone overlay
     radar_with_danger = radar.copy()
     
     # Calculate the 50-inch mark position
-    danger_y = RADAR_CENTER[1] - int((DANGER_ZONE / MAX_DEPTH) * (RADAR_SIZE - 100))
+    danger_radius = int((DANGER_ZONE / MAX_DEPTH) * radar_radius)
     
     # Calculate where the FOV lines intersect the 50-inch mark
-    angle = FOV / 2
-    danger_radius = int((DANGER_ZONE / MAX_DEPTH) * (RADAR_SIZE - 100))
-    left_x = int(RADAR_CENTER[0] - danger_radius * math.sin(math.radians(angle)))
-    right_x = int(RADAR_CENTER[0] + danger_radius * math.sin(math.radians(angle)))
+    left_x = int(RADAR_CENTER[0] + danger_radius * math.cos(math.radians(FOV_START_ANGLE)))
+    left_y = int(RADAR_CENTER[1] + danger_radius * math.sin(math.radians(FOV_START_ANGLE)))
+    right_x = int(RADAR_CENTER[0] + danger_radius * math.cos(math.radians(FOV_END_ANGLE)))
+    right_y = int(RADAR_CENTER[1] + danger_radius * math.sin(math.radians(FOV_END_ANGLE)))
     
     # Draw the danger zone line
-    cv2.line(radar_with_danger, (left_x, danger_y), (right_x, danger_y), (0, 0, 255), 2)
+    cv2.line(radar_with_danger, (left_x, left_y), (right_x, right_y), (0, 0, 255), 2)
     
-    # Draw danger zone text (centered horizontally, slightly above the line)
+    # Draw danger zone text (centered along the line)
     text = "50\""
     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, 0.5, 1)[0]
-    text_x = RADAR_CENTER[0] - text_size[0] // 2
+    mid_x = (left_x + right_x) // 2
+    mid_y = (left_y + right_y) // 2
+    # Calculate perpendicular offset for text
+    angle = math.atan2(right_y - left_y, right_x - left_x)
+    offset_x = int(10 * math.sin(angle))
+    offset_y = int(10 * math.cos(angle))
     cv2.putText(radar_with_danger, text, 
-                (text_x, danger_y - 5),
+                (mid_x - offset_x, mid_y + offset_y),
                 cv2.FONT_HERSHEY_DUPLEX, 0.5, (0, 0, 255), 1)
     
     return radar_with_danger
@@ -93,17 +137,17 @@ def update_radar(radar, points, fps, threshold):
     # Create a copy of the base radar
     radar_display = radar.copy()
     
-    # Draw status information
+    # Draw status information in top-right corner (moved slightly to the left)
     cv2.putText(radar_display, f"FPS: {fps:.1f}", 
-                (RADAR_SIZE - 150, 30), cv2.FONT_HERSHEY_DUPLEX, 
+                (RADAR_SIZE_W - 200, 30), cv2.FONT_HERSHEY_DUPLEX, 
                 0.7, (255, 255, 255), 2)
     
     cv2.putText(radar_display, f"THRESH: {threshold:.2f}", 
-                (RADAR_SIZE - 150, 60), cv2.FONT_HERSHEY_DUPLEX, 
+                (RADAR_SIZE_W - 200, 60), cv2.FONT_HERSHEY_DUPLEX, 
                 0.7, (255, 255, 255), 2)
     
     cv2.putText(radar_display, "STAB: ON", 
-                (RADAR_SIZE - 150, 90), cv2.FONT_HERSHEY_DUPLEX, 
+                (RADAR_SIZE_W - 200, 90), cv2.FONT_HERSHEY_DUPLEX, 
                 0.7, (0, 255, 0), 2)
     
     # Track if any points are in danger zone
@@ -118,12 +162,20 @@ def update_radar(radar, points, fps, threshold):
         smoothed_depth = smooth_depth(point_key, depth)
         
         # Convert depth to radar coordinates
-        radar_y = RADAR_CENTER[1] - int((smoothed_depth / MAX_DEPTH) * (RADAR_SIZE - 100))
+        radar_radius = min(RADAR_SIZE_W, RADAR_SIZE_H) // 2 - 100
+        radius = int((smoothed_depth / MAX_DEPTH) * radar_radius)
         
-        # Calculate x position based on screen position and FOV
+        # Calculate angle based on screen position and FOV
         screen_width = 640  # Assuming standard webcam resolution
-        angle = ((x - screen_width/2) / (screen_width/2)) * (FOV/2)
-        radar_x = int(RADAR_CENTER[0] + (RADAR_SIZE - 100) * math.sin(math.radians(angle)) * (smoothed_depth / MAX_DEPTH))
+        normalized_x = (x - screen_width/2) / (screen_width/2)  # -1 to 1
+        
+        # Map normalized_x to the FOV range
+        # Note: We negate normalized_x to prevent inversion when FOV is pointing north
+        radar_angle = FOV_CENTER_ANGLE + (normalized_x * FOV/2)  # + instead of - to flip horizontal direction
+        
+        # Calculate radar coordinates
+        radar_x = int(RADAR_CENTER[0] + radius * math.cos(math.radians(radar_angle)))
+        radar_y = int(RADAR_CENTER[1] + radius * math.sin(math.radians(radar_angle)))
         
         # Determine if point is in danger zone
         is_danger = smoothed_depth <= DANGER_ZONE
@@ -139,10 +191,14 @@ def update_radar(radar, points, fps, threshold):
                     (radar_x + 10, radar_y), cv2.FONT_HERSHEY_DUPLEX, 
                     0.5, point_color, 1)
     
-    # Show danger warning if needed
+    # Show danger warning if needed, positioned at the bottom of the display
     if danger_detected:
-        cv2.putText(radar_display, "WARNING: OBJECTS IN DANGER ZONE!", 
-                    (RADAR_SIZE - 400, 120), cv2.FONT_HERSHEY_DUPLEX, 
+        warning_text = "WARNING: OBJECTS IN DANGER ZONE!"
+        text_size = cv2.getTextSize(warning_text, cv2.FONT_HERSHEY_DUPLEX, 0.7, 2)[0]
+        text_x = (RADAR_SIZE_W - text_size[0]) // 2  # Center horizontally
+        text_y = RADAR_SIZE_H - 40  # Position at bottom, but higher than before
+        cv2.putText(radar_display, warning_text, 
+                    (text_x, text_y), cv2.FONT_HERSHEY_DUPLEX, 
                     0.7, (0, 0, 255), 2)
     
     return radar_display
